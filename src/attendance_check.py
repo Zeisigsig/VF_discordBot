@@ -10,6 +10,7 @@ VOICE_CHANNEL_NAME = "🔔：내전 대기실"
 NAME_PATTERN = re.compile(r"^(관전_|대기_)?(\d{2})\s(.+)$")
 
 def normalize(name: str) -> str:
+    name = re.sub(r"\s*\(.*?\)$", "", name)
     return name.strip().lower()
 
 def parse_display_name(display_name: str):
@@ -34,7 +35,7 @@ def setup_attendance_command(bot: commands.Bot):
         except discord.Forbidden:
             pass
 
-        # 1️⃣ 참여 대상 (XXX 기준)
+        # 참여 대상 (XXX 기준)
         requested_raw = [x.strip() for x in user_list.split(",") if x.strip()]
         requested_names = {
             # normalize(x.split()[-1]) for x in requested_raw
@@ -53,16 +54,16 @@ def setup_attendance_command(bot: commands.Bot):
         removed_tags = []
         added_observer_tags = []
 
-        # 2️⃣ 음성 채널 유저 순회
+        # 음성 채널 유저 순회
         for member in voice_channel.members:
             tag, code, nickname = parse_display_name(member.display_name)
             norm_nick = normalize(nickname)
 
-            # 🎯 참여 대상 유저
+            # 참여 대상 유저
             if norm_nick in requested_names:
                 present_requested.add(norm_nick)
 
-                # ❌ 관전_/대기_ 태그가 붙어 있으면 제거
+                # 관전_/대기_ 태그가 붙어 있으면 제거
                 if tag is not None and code:
                     new_nick = f"{code} {nickname}"
                     try:
@@ -71,7 +72,7 @@ def setup_attendance_command(bot: commands.Bot):
                     except discord.Forbidden:
                         removed_tags.append(f"(권한 부족) {member.display_name}")
 
-            # 👁 참여 대상이 아닌 유저 → 관전 태그 부여
+            # 참여 대상이 아닌 유저 → 관전 태그 부여
             else:
                 if tag is None and code:
                     new_nick = f"관전_{code} {nickname}"
@@ -81,7 +82,7 @@ def setup_attendance_command(bot: commands.Bot):
                     except discord.Forbidden:
                         added_observer_tags.append(f"(권한 부족) {member.display_name}")
 
-        # 3️⃣ 접속하지 않은 유저
+        # 접속하지 않은 유저
         missing_names = requested_names - present_requested
         missing_users = []
 
@@ -96,7 +97,7 @@ def setup_attendance_command(bot: commands.Bot):
             )
             missing_users.append(found)
 
-        # 4️⃣ 결과 출력
+        # 결과 출력
         result = []
 
         if missing_users:
@@ -116,5 +117,6 @@ def setup_attendance_command(bot: commands.Bot):
 
         if not result:
             result.append("✅ 모든 참여 유저가 올바르게 접속해 있습니다!")
+
 
         await ctx.send("\n".join(result))
