@@ -31,3 +31,48 @@
   - 유저명의 경우 ","로 구분
   - ex) !내전 00 홍길동, 김철수, 김영희, 06 박민수
     - 닉네임이 겹치지 않을시 연도 없이 사용 가능
+
+## 봇 운영 환경
+- Google Cloud f1-micro
+- 봇 디렉토리네 venv 생성
+  - python3 -m venv venv
+- service code: sudo vi /etc/systemd/system/discord-bot.service
+```
+[Unit]
+Description=Discord Bot
+After=network.target
+
+[Service]
+Type=simple
+User=username
+WorkingDirectory=/home/username/VF_discordBot/src
+ExecStart=/home/username/VF_discordBot/src/venv/bin/python main.py
+Restart=always
+RestartSec=5
+EnvironmentFile=/home/username/VF_discordBot/src/.env
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+```
+- service run
+```
+sudo systemctl daemon-reload
+sudo systemctl enable discord-bot
+sudo systemctl start discord-bot
+
+sudo systemctl status discord-bot
+```
+- service stop and update
+  - status시 서비스가 죽거나, 서비스 파일 코드 내용 수정 후 update가 필요한 경우
+```
+sudo systemctl stop discord-bot
+sudo systemctl daemon-reload
+sudo systemctl restart discord-bot
+
+sudo systemctl status discord-bot
+```
+  - 단순히 python 코드만 수정했을 경우
+```
+sudo systemctl restart discord-bot
+``` 
