@@ -49,7 +49,8 @@ async def change_status(ctx, member: discord.Member, mode: str):
 async def safe_delete(message: discord.Message):
     try:
         await message.delete()
-    except discord.Forbidden:
+    except discord.HTTPException:
+        # Forbidden(권한 부족), NotFound(이미 삭제됨) 모두 HTTPException 하위
         pass
 
 def setup_nickname_commands(bot: commands.Bot):

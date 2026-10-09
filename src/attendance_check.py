@@ -2,9 +2,13 @@ import discord
 from discord.ext import commands
 from discord.ext.commands import has_permissions
 
+import logging
 import re
 
 VOICE_CHANNEL_NAME = "🔔：내전 대기실"
+
+# 디스코드 메시지 1건의 최대 길이
+MESSAGE_LIMIT = 2000
 
 # 관전_/대기_ + DD + 닉네임
 NAME_PATTERN = re.compile(r"^(관전_|대기_)?(\d{2})\s(.+)$")
@@ -26,14 +30,32 @@ def parse_display_name(display_name: str):
         return tag, code, nickname.strip()
     return None, None, display_name.strip()
 
+def chunk_lines(lines, limit: int = MESSAGE_LIMIT):
+    """줄 단위로 묶어 limit를 넘지 않는 메시지 조각들로 나눈다."""
+    chunks, buf, size = [], [], 0
+    for line in lines:
+        if buf and size + len(line) + 1 > limit:
+            chunks.append("\n".join(buf))
+            buf, size = [], 0
+        buf.append(line)
+        size += len(line) + 1
+    if buf:
+        chunks.append("\n".join(buf))
+    return chunks
+
 def setup_attendance_command(bot: commands.Bot):
     @bot.command(name="내전")
     @has_permissions(administrator=True)
     async def check_attendance(ctx, *, user_list: str):
         try:
             await ctx.message.delete()
-        except discord.Forbidden:
+        except discord.HTTPException:
             pass
+
+        # 진행 상황 표시 - 완료되면 이 메시지를 결과로 교체한다
+        status = await ctx.send("⏳ 내전 인원을 확인하고 있습니다...")
+        ctx.vf_status = status      # 오류 시 에러 핸들러가 회수해서 재사용
+        await ctx.channel.typing()
 
         # 참여 대상 (XXX 기준)
         requested_raw = [x.strip() for x in user_list.split(",") if x.strip()]
@@ -47,7 +69,7 @@ def setup_attendance_command(bot: commands.Bot):
             name=VOICE_CHANNEL_NAME
         )
         if not voice_channel:
-            await ctx.send("❌ 음성 채널을 찾을 수 없습니다.")
+            await status.edit(content="❌ 음성 채널을 찾을 수 없습니다.")
             return
 
         present_requested = set()
@@ -86,16 +108,15 @@ def setup_attendance_command(bot: commands.Bot):
         missing_names = requested_names - present_requested
         missing_users = []
 
-        for name in missing_names:
-            found = next(
-                (
-                    m.display_name
-                    for m in ctx.guild.members
-                    if normalize(parse_display_name(m.display_name)[2]) == name
-                ),
-                name
-            )
-            missing_users.append(found)
+        if missing_names:
+            # 서버 전체를 한 번만 순회해 인덱스 구성
+            # 동명이인은 먼저 발견된 유저를 유지
+            name_index = {}
+            for member in ctx.guild.members:
+                key = normalize(parse_display_name(member.display_name)[2])
+                name_index.setdefault(key, member.display_name)
+
+            missing_users = [name_index.get(name, name) for name in missing_names]
 
         # 결과 출력
         result = []
@@ -119,4 +140,32 @@ def setup_attendance_command(bot: commands.Bot):
             result.append("✅ 모든 참여 유저가 올바르게 접속해 있습니다!")
 
 
-        await ctx.send("\n".join(result))
+        chunks = chunk_lines(result)
+        await status.edit(content=chunks[0])
+        for extra in chunks[1:]:
+            await ctx.send(extra)
+
+    @check_attendance.error
+    async def check_attendance_error(ctx, error):
+        if isinstance(error, commands.MissingRequiredArgument):
+            msg = "⚠️ 명단이 비어 있습니다.\n사용법: `!내전 홍길동, 김철수, 김영희`"
+        elif isinstance(error, commands.MissingPermissions):
+            msg = "⚠️ `!내전`은 관리자만 사용할 수 있습니다."
+        elif isinstance(error, commands.CommandInvokeError):
+            original = error.original
+            logging.error("!내전 처리 실패", exc_info=original)
+            msg = (
+                f"❌ 처리 중 오류가 발생했습니다: `{type(original).__name__}`\n"
+                "일부 유저만 반영되었을 수 있습니다. 다시 실행해도 안전합니다."
+            )
+        else:
+            raise error
+
+        try:
+            status = getattr(ctx, "vf_status", None)
+            if status is not None:
+                await status.edit(content=msg)
+            else:
+                await ctx.send(msg, delete_after=20)
+        except discord.HTTPException:
+            logging.warning("!내전 오류 안내 메시지를 전송하지 못했습니다.")
