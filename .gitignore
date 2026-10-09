@@ -8,3 +8,6 @@ __pycache__/
 src/change_status.py
 src/ic_inspector.py
 src/kakao_extractor.py
+
+# 런타임 상태 (서버별 채널/메시지 ID)
+src/panel_state.json

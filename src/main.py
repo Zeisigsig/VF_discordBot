@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 # 서브 모듈 import
 from nickname_commands import setup_nickname_commands
 from attendance_check import setup_attendance_command
+from status_panel import setup_status_panel
 
 # 로딩 및 로깅
 logging.basicConfig(level=logging.INFO)
@@ -33,6 +34,7 @@ async def on_ready():
 # 서브 모듈 초기화
 setup_nickname_commands(bot)
 setup_attendance_command(bot)
+setup_status_panel(bot)
 
 # 실행
 bot.run(TOKEN)
