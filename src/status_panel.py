@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -22,6 +23,10 @@ STATE_PATH = Path(__file__).resolve().parent / "panel_state.json"
 
 # 재설치 확인 대기 시간(초)
 CONFIRM_TIMEOUT = 30
+
+# 버튼 응답(ephemeral)을 몇 초 후 자동으로 치울지.
+# 유저가 "메시지 닫기"를 누르지 않아도 응답이 쌓이지 않게 하기 위함.
+AUTO_DISMISS_SECONDS = 10
 
 MODE_OBSERVER = "관전"
 MODE_WAITING = "대기"
@@ -72,6 +77,29 @@ def resolve_nickname(current: str, mode: str):
         return None, f"이미 {mode} 모드입니다."
 
     return prefix + base, f"✅ {mode}: `{prefix}{base}`"
+
+# asyncio.create_task 의 결과를 들고 있지 않으면 GC 될 수 있어 참조를 보관한다.
+_dismiss_tasks = set()
+
+async def _dismiss_later(interaction: discord.Interaction, delay: float):
+    await asyncio.sleep(delay)
+    try:
+        await interaction.delete_original_response()
+    except discord.HTTPException:
+        # 유저가 이미 닫았거나 토큰(15분)이 만료된 경우
+        pass
+
+def schedule_dismiss(interaction: discord.Interaction, delay: float = None):
+    """ephemeral 응답을 delay 초 후 자동으로 삭제하도록 예약한다.
+
+    기본 인자에 상수를 직접 쓰면 import 시점에 값이 고정되므로 None 으로 받아
+    호출 시점에 AUTO_DISMISS_SECONDS 를 읽는다.
+    """
+    if delay is None:
+        delay = AUTO_DISMISS_SECONDS
+    task = asyncio.create_task(_dismiss_later(interaction, delay))
+    _dismiss_tasks.add(task)
+    task.add_done_callback(_dismiss_tasks.discard)
 
 def load_panel_state():
     """저장된 패널 위치를 (channel_id, message_id) 로 돌려준다. 없으면 (None, None)."""
@@ -150,6 +178,11 @@ class StatusPanel(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)   # timeout=None + custom_id -> 재시작 후에도 동작
 
+    async def _respond(self, interaction: discord.Interaction, content: str):
+        """결과를 누른 본인에게만 보여주고, 일정 시간 후 자동으로 치운다."""
+        await interaction.edit_original_response(content=content)
+        schedule_dismiss(interaction)
+
     async def _apply(self, interaction: discord.Interaction, mode: str):
         # 닉네임 변경이 레이트 리밋에 걸리면 디스코드의 최초 응답 제한(3초)을 넘길 수 있다.
         # 먼저 응답을 유보해 15분까지 여유를 확보한다.
@@ -162,37 +195,37 @@ class StatusPanel(discord.ui.View):
 
         member = interaction.user
         if not isinstance(member, discord.Member):
-            await interaction.edit_original_response(
-                content="⚠️ 서버 안에서만 사용할 수 있습니다."
-            )
+            await self._respond(interaction, "⚠️ 서버 안에서만 사용할 수 있습니다.")
             return
 
         current = member.display_name
         new_nick, message = resolve_nickname(current, mode)
 
         if new_nick is None:
-            await interaction.edit_original_response(content=message)
+            await self._respond(interaction, message)
             return
 
         if len(new_nick) > NICK_LIMIT:
-            await interaction.edit_original_response(
-                content=f"⚠️ 닉네임이 {len(new_nick)}자가 되어 디스코드 제한({NICK_LIMIT}자)을 넘습니다."
+            await self._respond(
+                interaction,
+                f"⚠️ 닉네임이 {len(new_nick)}자가 되어 디스코드 제한({NICK_LIMIT}자)을 넘습니다.",
             )
             return
 
         try:
             await member.edit(nick=new_nick)
         except discord.Forbidden:
-            await interaction.edit_original_response(
-                content="❌ 권한이 부족해 닉네임을 바꿀 수 없습니다. (봇 역할이 대상보다 높아야 합니다)"
+            await self._respond(
+                interaction,
+                "❌ 권한이 부족해 닉네임을 바꿀 수 없습니다. (봇 역할이 대상보다 높아야 합니다)",
             )
             return
         except discord.HTTPException as e:
             logging.error("닉네임 변경 실패 (%s -> %s)", current, new_nick, exc_info=e)
-            await interaction.edit_original_response(content=f"❌ 오류: {e}")
+            await self._respond(interaction, f"❌ 오류: {e}")
             return
 
-        await interaction.edit_original_response(content=message)
+        await self._respond(interaction, message)
 
     @discord.ui.button(label="관전", style=discord.ButtonStyle.secondary,
                        custom_id="vf:status:observer")
@@ -210,7 +243,7 @@ class StatusPanel(discord.ui.View):
         await self._apply(interaction, MODE_RESET)
 
 PANEL_TEXT = (
-    "## 내전 상태 변경\n"
+    "## 상태 변경\n"
     "아래 버튼으로 본인 닉네임의 접두어를 바꿀 수 있습니다.\n\n"
     f"• **관전** — 닉네임 앞에 `{PREFIX_OBSERVER}` 를 붙입니다\n"
     f"• **대기** — 닉네임 앞에 `{PREFIX_WAITING}` 를 붙입니다\n"
@@ -256,10 +289,18 @@ def setup_status_panel(bot: commands.Bot):
             return
 
         if existing is not None:
-            # 같은 채널이면 재설치하지 않는다
+            # 같은 채널이면 새로 설치하지 않고 기존 패널의 문구/버튼을 갱신한다
             if existing.channel.id == ctx.channel.id:
+                try:
+                    await existing.edit(content=PANEL_TEXT, view=StatusPanel())
+                except discord.HTTPException as e:
+                    logging.warning("패널 갱신 실패: %s", e)
+                    await ctx.send(
+                        f"❌ 기존 패널을 갱신하지 못했습니다: {e}", delete_after=30
+                    )
+                    return
                 await ctx.send(
-                    "ℹ️ 이미 이 채널에 패널이 설치되어 있습니다.", delete_after=15
+                    "🔄 이 채널의 패널을 최신 문구로 갱신했습니다.", delete_after=15
                 )
                 return
 
