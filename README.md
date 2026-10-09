@@ -78,46 +78,112 @@ Bot 설정에서 아래 두 개를 **켜야 한다**. 끄면 봇이 기동되지
   - 대상 음성 채널은 `attendance_check.py` 의 `VOICE_CHANNEL_NAME` 참조
 
 ## 봇 운영 환경
-- Google Cloud f1-micro
-- 봇 디렉토리네 venv 생성
-  - python3 -m venv venv
-- service code: sudo vi /etc/systemd/system/discord-bot.service
+
+트래커 웹(`VF_scrim_Tracker`)과 **같은 VM 1대**에서 함께 돌아간다. 봇과 웹은 별개 서비스다.
+
+- **인스턴스:** GCP e2-micro(1GB RAM), Ubuntu 22.04 LTS Minimal, 표준 영구디스크, swap 1GB
+  - 구버전 f1-micro(봇 전용)는 2026-07-23에 삭제됨
+- **서비스 유저:** `vf` — 앱은 `/home/vf/VF_discordBot` 에 clone
+- **서비스:** `vf-bot.service` (웹은 `vf.service` — 혼동 주의)
+- **의존성:** `discord.py` + `python-dotenv` (표준 라이브러리 외 추가 없음)
+  ```
+  cd ~/VF_discordBot
+  uv venv
+  uv pip install discord.py python-dotenv
+  ```
+- **토큰:** `src/.env` 의 `DISCORD_BOT_TOKEN` (`main.py` 의 `load_dotenv()` 가 WorkingDirectory 기준으로 읽음)
+
+### ⚠️ 계정 권한 분리 — 배포 시 가장 많이 걸리는 부분
+
+최소권한 설계라 작업에 따라 계정을 바꿔야 한다.
+
+| 작업 | 계정 | 이유 |
+|---|---|---|
+| `git pull`, 파일 수정, venv | **`vf`** (`sudo su - vf`) | 레포가 `vf` 소유 |
+| `systemctl` 등 시스템 작업 | **본인 GCP 계정** (`exit` 후) | `vf` 는 sudoers 에 없고 비번도 잠김 |
+
+`vf` 상태에서 `sudo` 는 **무조건 실패**한다("try again"). 반대로 GCP 브라우저 SSH 계정은 passwordless sudo 라 `sudo` 만 제대로 붙으면 된다.
+
+### 코드 배포 (평소 업데이트)
+
+```
+sudo su - vf
+cd ~/VF_discordBot
+git status          # 로컬 수정 없는지 확인
+git pull
+exit
+```
+```
+sudo systemctl restart vf-bot
+journalctl -u vf-bot -n 20 --no-pager
+```
+
+기동 성공 시 로그에 아래가 보인다.
+```
+INFO:root:관전/대기 패널 View 등록 완료
+✅ Bot connected as <봇이름>
+```
+
+`git pull` 만으로는 반영되지 않는다 — 파이썬이 기동 시 코드를 메모리로 import 하므로 **반드시 restart** 가 필요하다.
+패널 문구를 바꾼 경우에는 restart 후 디스코드에서 `!패널설치` 를 한 번 더 실행해야 기존 패널 메시지가 갱신된다.
+
+### 상태 확인 / 로그
+
+```
+systemctl status vf-bot
+journalctl -u vf-bot -f          # 실시간
+journalctl -u vf-bot -n 100 --no-pager
+sudo systemctl show vf-bot -p ActiveState,ActiveEnterTimestamp
+```
+
+### 되돌리기
+
+```
+sudo su - vf
+cd ~/VF_discordBot && git reset --hard <직전커밋>
+exit
+sudo systemctl restart vf-bot
+```
+
+### systemd 유닛
+
+실제 설치본은 VM 의 `/etc/systemd/system/vf-bot.service` 다. **재설치 전에 반드시 아래로 실물을 확인**할 것.
+
+```
+cat /etc/systemd/system/vf-bot.service
+```
+
+아래는 운영 기록으로부터 재구성한 참고본이다(실물과 다를 수 있음).
+
 ```
 [Unit]
-Description=Discord Bot
-After=network.target
+Description=VF Discord Bot
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=username
-WorkingDirectory=/home/username/VF_discordBot/src
-ExecStart=/home/username/VF_discordBot/src/venv/bin/python main.py
+User=vf
+Group=vf
+WorkingDirectory=/home/vf/VF_discordBot/src
+ExecStart=/home/vf/VF_discordBot/.venv/bin/python main.py
 Restart=always
 RestartSec=5
-EnvironmentFile=/home/username/VF_discordBot/src/.env
 Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target
 ```
-- service run
+
+유닛 파일을 수정했을 때:
+
 ```
 sudo systemctl daemon-reload
-sudo systemctl enable discord-bot
-sudo systemctl start discord-bot
+sudo systemctl restart vf-bot
+sudo systemctl status vf-bot
+```
 
-sudo systemctl status discord-bot
-```
-- service stop and update
-  - status시 서비스가 죽거나, 서비스 파일 코드 내용 수정 후 update가 필요한 경우
-```
-sudo systemctl stop discord-bot
-sudo systemctl daemon-reload
-sudo systemctl restart discord-bot
+### 브라우저 SSH 주의
 
-sudo systemctl status discord-bot
-```
-  - 단순히 python 코드만 수정했을 경우
-```
-sudo systemctl restart discord-bot
-``` 
+GCP 콘솔의 브라우저 SSH 는 긴 한 줄을 붙여넣을 때 **공백을 끼워 넣거나 heredoc 의 `EOF` 를 못 닫아** `>` 연속 프롬프트에 걸리는 경우가 있다. 명령은 짧게 끊어서 한 줄씩 넣는다.
+`sudo` 가 쪼개져 떨어지면 polkit "authentication is required" 가 뜨는데, 그건 `sudo` 가 안 붙은 것이니 다시 입력하면 된다.

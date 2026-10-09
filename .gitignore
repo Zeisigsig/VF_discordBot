@@ -11,3 +11,6 @@ src/kakao_extractor.py
 
 # 런타임 상태 (서버별 채널/메시지 ID)
 src/panel_state.json
+
+# 작업 노트 (비공개)
+design/note.md
