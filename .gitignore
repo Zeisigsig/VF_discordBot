@@ -1,0 +1,10 @@
+.env
+.venv/
+.idea/
+__pycache__/
+*.pyc
+
+# 연구/구현 중 - 아직 공개 안 함
+src/change_status.py
+src/ic_inspector.py
+src/kakao_extractor.py
