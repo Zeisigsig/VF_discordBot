@@ -215,9 +215,10 @@ class RedrawView(discord.ui.View):
         super().__init__(timeout=REDRAW_TIMEOUT)
         self.author_id = author_id
         self.lucky = lucky
-        # discord.py 2.6 의 View 는 메시지 참조를 들고 있지 않아 직접 보관한다
+        # View 는 메시지 참조를 들고 있지 않아 직접 보관한다
         # (on_timeout 에서 버튼을 비활성화하려면 필요).
-        self.message = None
+        # 라이브러리가 나중에 같은 이름을 쓰더라도 충돌하지 않게 message 를 피한다.
+        self.result_message = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
@@ -233,10 +234,10 @@ class RedrawView(discord.ui.View):
 
     async def on_timeout(self):
         self.set_locked(True)
-        if self.message is None:
+        if self.result_message is None:
             return
         try:
-            await self.message.edit(view=self)
+            await self.result_message.edit(view=self)
         except discord.HTTPException:
             # 결과 메시지가 이미 지워진 경우
             pass
@@ -332,10 +333,10 @@ def setup_draw_commands(bot: commands.Bot):
         frames = draw_frames(names, matches, lucky)
         view = RedrawView(ctx.author.id, lucky)
         view.set_locked(True)        # 연출이 끝나면 play_frames 가 풀어준다
-        view.message = await ctx.send(embed=frames[0][1], view=view)
+        view.result_message = await ctx.send(embed=frames[0][1], view=view)
 
         async def edit(embed, view_):
-            await view.message.edit(embed=embed, view=view_)
+            await view.result_message.edit(embed=embed, view=view_)
 
         await play_frames(frames, view, edit)
 

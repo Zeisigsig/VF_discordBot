@@ -13,8 +13,10 @@
 ### 1. 의존성
 ```
 python3 -m venv venv
-venv/bin/pip install discord.py python-dotenv
+venv/bin/pip install -r requirements.txt
 ```
+`requirements.txt` 는 **서버에서 돌고 있는 버전**으로 고정돼 있다. 버전을 올릴 때는
+서버와 로컬을 같이 올린다 (한쪽만 올리면 한쪽에서만 되는 코드를 쓰게 된다).
 
 ### 2. `.env` (저장소에 올리지 않음)
 `src/.env` 에 봇 토큰을 넣는다.
@@ -109,11 +111,11 @@ Bot 설정에서 아래 두 개를 **켜야 한다**. 끄면 봇이 기동되지
   - 구버전 f1-micro(봇 전용)는 2026-07-23에 삭제됨
 - **서비스 유저:** `vf` — 앱은 `/home/vf/VF_discordBot` 에 clone
 - **서비스:** `vf-bot.service` (웹은 `vf.service` — 혼동 주의)
-- **의존성:** `discord.py` + `python-dotenv` (표준 라이브러리 외 추가 없음)
+- **의존성:** `discord.py` + `python-dotenv` (표준 라이브러리 외 추가 없음). 버전은 `requirements.txt` 고정
   ```
   cd ~/VF_discordBot
   uv venv
-  uv pip install discord.py python-dotenv
+  uv pip install -r requirements.txt
   ```
 - **토큰:** `src/.env` 의 `DISCORD_BOT_TOKEN` (`main.py` 의 `load_dotenv()` 가 WorkingDirectory 기준으로 읽음)
 
@@ -137,16 +139,21 @@ git status          # 로컬 수정 없는지 확인
 git pull
 exit
 ```
+`requirements.txt` 가 바뀐 커밋이면 `exit` 전에 `uv pip install -r requirements.txt` 도 함께 실행한다.
 ```
 sudo systemctl restart vf-bot
 journalctl -u vf-bot -n 20 --no-pager
 ```
 
-기동 성공 시 로그에 아래가 보인다.
+기동 성공 시 로그에 아래 두 줄이 보인다 (순서는 바뀔 수 있다).
 ```
+INFO:root:✅ Bot connected as <봇이름>
 INFO:root:관전/대기 패널 View 등록 완료
-✅ Bot connected as <봇이름>
 ```
+접속 로그는 `logging` 으로 남긴다. `print` 로 바꾸면 stdout 이 systemd 아래에서 블록 버퍼링돼
+기동 직후 로그에 나타나지 않는다.
+
+이 봇에 없는 `!` 명령(다른 봇의 명령)은 조용히 무시한다. 로그에 `CommandNotFound` 가 쌓이지 않는다.
 
 `git pull` 만으로는 반영되지 않는다 — 파이썬이 기동 시 코드를 메모리로 import 하므로 **반드시 restart** 가 필요하다.
 패널 문구를 바꾼 경우에는 restart 후 디스코드에서 `!패널설치` 를 한 번 더 실행해야 기존 패널 메시지가 갱신된다.
