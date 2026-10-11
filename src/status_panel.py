@@ -227,7 +227,7 @@ class StatusPanel(discord.ui.View):
 
         await self._respond(interaction, message)
 
-    @discord.ui.button(label="관전", style=discord.ButtonStyle.secondary,
+    @discord.ui.button(label="관전", style=discord.ButtonStyle.success,
                        custom_id="vf:status:observer")
     async def observer(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._apply(interaction, MODE_OBSERVER)
@@ -242,14 +242,27 @@ class StatusPanel(discord.ui.View):
     async def reset(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._apply(interaction, MODE_RESET)
 
-PANEL_TEXT = (
-    "## 상태 변경\n"
-    "아래 버튼으로 본인 닉네임의 접두어를 바꿀 수 있습니다.\n\n"
-    f"• **관전** — 닉네임 앞에 `{PREFIX_OBSERVER}` 를 붙입니다\n"
-    f"• **대기** — 닉네임 앞에 `{PREFIX_WAITING}` 를 붙입니다\n"
-    "• **초기화** — 접두어를 제거해 `[연도] [닉네임]` 기본형으로 되돌립니다 (관전/대기 해제)\n\n"
-    "-# 응답은 누른 본인에게만 보입니다."
-)
+# Embed 왼쪽 색 띠. 라이트/다크 테마 양쪽에서 읽히는 색이어야 한다.
+PANEL_COLOR = 0x5865F2
+
+def build_panel_embed() -> discord.Embed:
+    """패널 Embed 를 새로 만들어 돌려준다.
+
+    Embed 는 가변 객체라 모듈 전역에 하나만 두고 돌려쓰면
+    나중에 호출부에서 필드를 덧붙일 때 서로 영향을 준다.
+    """
+    return discord.Embed(
+        title="상태 변경",
+        description=(
+            "아래 버튼을 눌러 관전/대기 상태로 변경 또는 해제할 수 있습니다.\n\n"
+            f"• **관전** — 닉네임 앞에 `{PREFIX_OBSERVER}` 를 붙입니다\n"
+            f"• **대기** — 닉네임 앞에 `{PREFIX_WAITING}` 를 붙입니다\n"
+            "• **초기화** — 접두어를 제거해 `[연도] [닉네임]` 기본형으로 되돌립니다"
+            " (관전/대기 해제)\n\n"
+            "-# 응답은 누른 본인에게만 보입니다."
+        ),
+        color=PANEL_COLOR,
+    )
 
 def setup_status_panel(bot: commands.Bot):
     registered = False
@@ -292,7 +305,9 @@ def setup_status_panel(bot: commands.Bot):
             # 같은 채널이면 새로 설치하지 않고 기존 패널의 문구/버튼을 갱신한다
             if existing.channel.id == ctx.channel.id:
                 try:
-                    await existing.edit(content=PANEL_TEXT, view=StatusPanel())
+                    await existing.edit(
+                        content=None, embed=build_panel_embed(), view=StatusPanel()
+                    )
                 except discord.HTTPException as e:
                     logging.warning("패널 갱신 실패: %s", e)
                     await ctx.send(
@@ -339,7 +354,7 @@ def setup_status_panel(bot: commands.Bot):
             except discord.HTTPException as e:
                 logging.warning("기존 패널 삭제 실패: %s", e)
 
-        message = await ctx.send(PANEL_TEXT, view=StatusPanel())
+        message = await ctx.send(embed=build_panel_embed(), view=StatusPanel())
 
         try:
             save_panel_state(message.channel.id, message.id)
