@@ -15,9 +15,6 @@ from nickname_commands import PREFIX_OBSERVER, PREFIX_WAITING
 TEAM_SIZE = 5
 MATCH_SIZE = TEAM_SIZE * 2
 
-# 경기 이름. 음성 채널 정원이 99명이라 경기는 최대 10개이므로 이만큼이면 충분하다.
-MATCH_LABELS = "ABCDEFGHIJ"
-
 # 관전/대기는 추첨에서 뺀다.
 # parse_display_name 의 tag 가 아니라 접두어 문자열로 판정하는 이유:
 # NAME_PATTERN 은 'DD ' 를 요구하므로 '관전_대기_00 홍길동' 처럼
@@ -31,19 +28,11 @@ LUCKY_PATTERN = re.compile(r"\d{1,9}")
 REDRAW_TIMEOUT = 300
 
 DRAW_COLOR = 0x5865F2
-SPIN_COLOR = 0x9B59B6
 
-# --- 추첨 연출 ---
-# 메시지 편집은 채널당 레이트 리밋이 있어, 간격을 더 줄이면 discord.py 가 429 대기를 하며
-# 프레임이 불규칙하게 끊긴다. 총 편집 횟수도 MAX_REVEAL_STEPS 로 묶는다.
-SPIN_FRAMES = ("◐", "◓", "◑", "◒")
-SPIN_STEPS = 3
-SPIN_INTERVAL = 1.0
-REVEAL_INTERVAL = 0.8
-
-# 경기를 하나씩 공개하면 10경기(99명)에서 편집이 10번이라 연출이 10초를 넘는다.
-# 경기가 많으면 여러 개를 묶어 공개해 이 횟수 안에서 끝낸다.
-MAX_REVEAL_STEPS = 4
+# 추첨 연출: "입력 중..." 을 이만큼 띄운 뒤 결과를 한 번에 보낸다.
+# 글자 단위 타이핑은 디스코드에서 불가능하다 — 메시지 편집이 채널당 초당 1회 수준으로 제한되므로
+# 수백 번의 편집이 필요한 연출은 레이트 리밋에 막힌다. 편집을 아예 쓰지 않는 쪽을 택했다.
+TYPING_DELAY = 1.2
 
 NUMBER_EMOJI = ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣")
 
@@ -102,68 +91,46 @@ def draw_matches(names):
     matches.append(last)
     return matches
 
-def build_teams_embed(names, matches, lucky, shown=None):
-    """추첨 결과 Embed. shown 을 주면 앞쪽 shown 개 경기만 담는다 (순차 공개용).
+def format_match(team1, team2, first_team: int):
+    """경기 하나를 코드박스로 적는다. 팀 번호는 경기를 넘어 이어진다 (1·2 / 3·4 / 5·6).
 
-    경기 수는 처음부터 전부 적는다. 몇 경기가 더 나올지 보이는 편이 기다리기 낫다.
+    코드박스 안에서는 마크다운이 적용되지 않아 글자를 키울 수 없다.
+    이름에 공백이 들어갈 수 있어(`00 도굴꾼 임누리`) 구분자는 공백이 아닌 ` · ` 를 쓴다.
     """
-    if shown is None:
-        shown = len(matches)
-    done = shown >= len(matches)
+    return (
+        "```\n"
+        f"{first_team}팀 : {' · '.join(team1)}\n"
+        f"{first_team + 1}팀 : {' · '.join(team2)}\n"
+        "```"
+    )
 
+def build_teams_embed(names, matches, lucky):
+    """추첨 결과 Embed."""
     summary = f"{len(names)}명 · {len(matches)}경기"
     if lucky is not None:
         summary += f" · 🍀 행운의 숫자 {lucky}"
-    lines = [summary]
+    blocks = [f"### {summary}"]
 
-    # 빈자리는 마지막 경기에만 생기므로 그 경기가 공개될 때 같이 알린다
+    for i, (team1, team2) in enumerate(matches):
+        blocks.append(format_match(team1, team2, i * 2 + 1))
+
+    # 빈자리는 마지막 경기에만 생기므로 그 경기가 공개될 때 같이 알린다.
+    # 작은 글씨(-#)로 두면 정작 봐야 할 경고가 가장 안 보인다.
     remainder = len(names) - (len(matches) - 1) * MATCH_SIZE
-    if done and remainder < MATCH_SIZE:
-        lines.append(
-            f"-# ⚠️ {MATCH_LABELS[len(matches) - 1]} 경기는 실인원 {remainder}명입니다"
-            f" (빈자리 {MATCH_SIZE - remainder})"
+    if remainder < MATCH_SIZE:
+        last = len(matches) * 2
+        blocks.append(
+            f"**⚠️ {last - 1}팀·{last}팀은 실인원 {remainder}명입니다"
+            f" (빈자리 {MATCH_SIZE - remainder})**"
         )
 
     embed = discord.Embed(
         title="🎲 내전 팀 추첨",
-        description="\n".join(lines),
+        description="\n".join(blocks),
         color=DRAW_COLOR,
     )
-    for label, (team1, team2) in zip(MATCH_LABELS, matches[:shown]):
-        embed.add_field(
-            name=f"{label} 경기",
-            value=f"**1팀** {' · '.join(team1)}\n**2팀** {' · '.join(team2)}",
-            inline=False,
-        )
-    if done:
-        embed.set_footer(text=f"다시 뽑기는 {REDRAW_TIMEOUT // 60}분 안에 누를 수 있습니다")
+    embed.set_footer(text=f"다시 뽑기는 {REDRAW_TIMEOUT // 60}분 안에 누를 수 있습니다")
     return embed
-
-def spin_embed(frame: int, count: int):
-    """'추첨 중' 프레임. 결과는 이미 확정돼 있고 이건 연출일 뿐이다."""
-    return discord.Embed(
-        title=f"{SPIN_FRAMES[frame % len(SPIN_FRAMES)]} 추첨 중...",
-        description=f"{count}명",
-        color=SPIN_COLOR,
-    )
-
-def reveal_steps(total: int):
-    """경기를 몇 개까지 공개한 프레임을 만들지의 목록. 편집 횟수를 MAX_REVEAL_STEPS 로 묶는다.
-
-    3경기 -> [1, 2, 3]  (한 경기씩)
-    10경기 -> [3, 6, 9, 10]  (세 경기씩 묶어 4번에)
-    """
-    size = math.ceil(total / min(total, MAX_REVEAL_STEPS))
-    return [min(i + size, total) for i in range(0, total, size)]
-
-def draw_frames(names, matches, lucky):
-    """(대기 시간, Embed) 프레임 목록. 첫 프레임은 대기 없이 바로 보여준다."""
-    frames = [(0.0, spin_embed(0, len(names)))]
-    for i in range(1, SPIN_STEPS):
-        frames.append((SPIN_INTERVAL, spin_embed(i, len(names))))
-    for shown in reveal_steps(len(matches)):
-        frames.append((REVEAL_INTERVAL, build_teams_embed(names, matches, lucky, shown)))
-    return frames
 
 def prepare_draw(guild):
     """(참가자 목록, 경기 목록, 오류문구) 를 돌려준다. 명령과 '다시 뽑기' 가 함께 쓴다.
@@ -184,25 +151,6 @@ def prepare_draw(guild):
 
     return names, draw_matches(names), None
 
-async def play_frames(frames, view, edit):
-    """첫 프레임 이후를 순서대로 갱신한다. 마지막 프레임에서 버튼 잠금을 푼다.
-
-    edit(embed, view) 는 명령(메시지 편집)과 버튼(인터랙션 응답)에서 경로가 달라 콜백으로 받는다.
-    """
-    last = len(frames) - 1
-    for index in range(1, len(frames)):
-        delay, embed = frames[index]
-        await asyncio.sleep(delay)
-        if index == last:
-            view.set_locked(False)
-        try:
-            await edit(embed, view)
-        except discord.HTTPException as e:
-            # 연출 도중 결과 메시지가 지워진 경우. 남은 프레임은 보여줄 곳이 없다.
-            logging.info("추첨 연출 중단: %s", e)
-            view.set_locked(False)
-            return
-
 class RedrawView(discord.ui.View):
     """결과 메시지에 붙는 '다시 뽑기' 버튼.
 
@@ -219,6 +167,9 @@ class RedrawView(discord.ui.View):
         # (on_timeout 에서 버튼을 비활성화하려면 필요).
         # 라이브러리가 나중에 같은 이름을 쓰더라도 충돌하지 않게 message 를 피한다.
         self.result_message = None
+        # 연출(약 1.2초) 중에 다시 눌리는 것을 막는다. 버튼을 비활성화하려면 메시지 편집이
+        # 한 번 더 필요하므로, 편집 없이 플래그로 막는다.
+        self.drawing = False
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
@@ -244,21 +195,28 @@ class RedrawView(discord.ui.View):
 
     @discord.ui.button(label="🔄 다시 뽑기", style=discord.ButtonStyle.primary)
     async def redraw(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.drawing:
+            await interaction.response.send_message("⏳ 추첨 중입니다.", ephemeral=True)
+            return
+
         # 누를 때마다 음성 채널을 다시 읽는다. 그 사이 들어오거나 나간 사람이 반영된다.
         names, matches, error = prepare_draw(interaction.guild)
         if error is not None:
             await interaction.response.send_message(error, ephemeral=True)
             return
 
-        # 연출 중에는 버튼을 잠근다. 두 번 누르면 두 연출이 같은 메시지를 번갈아 덮어쓴다.
-        frames = draw_frames(names, matches, self.lucky)
-        self.set_locked(True)
-        await interaction.response.edit_message(embed=frames[0][1], view=self)
-
-        async def edit(embed, view):
-            await interaction.edit_original_response(embed=embed, view=view)
-
-        await play_frames(frames, self, edit)
+        self.drawing = True
+        try:
+            # defer 로 먼저 응답해 3초 제한을 피한다. 화면에는 변화가 없고,
+            # 그 동안 '입력 중...' 만 뜬다.
+            await interaction.response.defer()
+            async with interaction.channel.typing():
+                await asyncio.sleep(TYPING_DELAY)
+            await interaction.edit_original_response(
+                embed=build_teams_embed(names, matches, self.lucky), view=self
+            )
+        finally:
+            self.drawing = False
 
 def parse_map_args(raw: str):
     """'2 코로드 브리즈 어센트 선셋' -> (뽑을 개수, 맵 목록, 오류문구)
@@ -330,15 +288,15 @@ def setup_draw_commands(bot: commands.Bot):
             await ctx.send(error, delete_after=20)
             return
 
-        frames = draw_frames(names, matches, lucky)
+        # 결과를 먼저 확정해두고 '입력 중...' 만 띄운다. 메시지 편집을 쓰지 않으므로
+        # 레이트 리밋과 무관하고, 결과는 한 번에 완성된 상태로 올라간다.
+        async with ctx.channel.typing():
+            await asyncio.sleep(TYPING_DELAY)
+
         view = RedrawView(ctx.author.id, lucky)
-        view.set_locked(True)        # 연출이 끝나면 play_frames 가 풀어준다
-        view.result_message = await ctx.send(embed=frames[0][1], view=view)
-
-        async def edit(embed, view_):
-            await view.result_message.edit(embed=embed, view=view_)
-
-        await play_frames(frames, view, edit)
+        view.result_message = await ctx.send(
+            embed=build_teams_embed(names, matches, lucky), view=view
+        )
 
     @draw_teams.error
     async def draw_teams_error(ctx, error):
@@ -360,18 +318,17 @@ def setup_draw_commands(bot: commands.Bot):
         picked = _rng.sample(maps, count)
         remaining = [m for m in maps if m not in picked]
 
+        lines = [f"### {len(maps)}개 중 {count}개"]
+        # 뽑힌 맵이 제일 중요한 정보라 가장 크게 적는다
+        lines += [f"## {number_mark(i)} {m}" for i, m in enumerate(picked)]
+        if remaining:
+            lines.append(f"**제외** {' · '.join(remaining)}")
+
         embed = discord.Embed(
             title="🗺️ 맵 추첨",
-            description=f"{len(maps)}개 중 {count}개",
+            description="\n".join(lines),
             color=DRAW_COLOR,
         )
-        embed.add_field(
-            name="뽑힌 맵",
-            value="\n".join(f"{number_mark(i)} {m}" for i, m in enumerate(picked)),
-            inline=False,
-        )
-        if remaining:
-            embed.add_field(name="제외", value=" · ".join(remaining), inline=False)
 
         await ctx.send(embed=embed)
 
