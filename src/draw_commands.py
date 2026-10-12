@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import math
 import random
 import re
 
@@ -12,9 +11,8 @@ from attendance_check import VOICE_CHANNEL_NAME
 from nickname_commands import PREFIX_OBSERVER, PREFIX_WAITING
 from status_panel import schedule_dismiss
 
-# 발로란트 5대5
-TEAM_SIZE = 5
-MATCH_SIZE = TEAM_SIZE * 2
+# 10명을 한 팀으로 묶는다. 5:5 밸런싱은 봇이 하지 않고 그 10명이 모여서 직접 한다.
+TEAM_SIZE = 10
 
 # 관전/대기는 추첨에서 뺀다.
 # parse_display_name 의 tag 가 아니라 접두어 문자열로 판정하는 이유:
@@ -52,10 +50,6 @@ def entry_name(entry):
     """팀 구성원을 표시용 이름으로. 빈자리는 Member 가 아니라 문자열이다."""
     return entry if isinstance(entry, str) else entry.display_name
 
-def entry_mention(entry):
-    """팀 구성원을 멘션으로. 빈자리는 멘션할 대상이 없어 문자열 그대로 둔다."""
-    return entry if isinstance(entry, str) else entry.mention
-
 def collect_participants(voice_channel):
     """추첨 대상 Member 목록.
 
@@ -71,82 +65,55 @@ def collect_participants(voice_channel):
         if not member.bot and not member.display_name.startswith(EXCLUDED_PREFIXES)
     ]
 
-def draw_matches(participants):
-    """참가자를 경기별 (1팀, 2팀) 로 나눈다. participants 는 1명 이상이어야 한다.
+def split_teams(participants):
+    """참가자를 10명 단위 팀으로 나눈다. participants 는 1명 이상이어야 한다.
 
-    앞 경기부터 5:5 로 꽉 채우고, 남는 인원은 마지막 경기 두 팀에 번갈아 넣는다.
-    순서대로 채우면 한쪽 팀이 전원 빈자리가 되어 몇 명 남았는지가 안 보인다.
-    빈자리 번호는 경기 구분 없이 1부터 이어 붙인다.
+    앞 팀부터 10명씩 꽉 채우고 남는 인원은 마지막 팀에 둔다. 인원을 고르게 퍼뜨리지
+    않는 이유는 10명이 모여야 한 경기가 서기 때문이다 — 23명을 8/8/7 로 나누면
+    세 팀 모두 경기를 열 수 없다.
+    모자란 자리는 '대기 - N' 으로 채운다. 빈자리가 몇 개인지가 그 줄 수로 바로 보인다.
     """
     pool = list(participants)
     _rng.shuffle(pool)
 
-    match_count = math.ceil(len(pool) / MATCH_SIZE)
-    matches = []
+    teams = [pool[i:i + TEAM_SIZE] for i in range(0, len(pool), TEAM_SIZE)]
 
-    for i in range(match_count - 1):
-        block = pool[i * MATCH_SIZE:(i + 1) * MATCH_SIZE]
-        matches.append((block[:TEAM_SIZE], block[TEAM_SIZE:]))
+    last = teams[-1]
+    for i in range(TEAM_SIZE - len(last)):
+        last.append(f"대기 - {i + 1}")
 
-    last = ([], [])
-    for i, member in enumerate(pool[(match_count - 1) * MATCH_SIZE:]):
-        last[i % 2].append(member)
+    return teams
 
-    filler = 1
-    for team in last:
-        while len(team) < TEAM_SIZE:
-            team.append(f"빈자리_{filler}")
-            filler += 1
+def build_team_index(teams):
+    """{user_id: 팀 번호} — '내 팀 확인' 버튼이 쓴다."""
+    return {
+        entry.id: number
+        for number, team in enumerate(teams, start=1)
+        for entry in team
+        if not isinstance(entry, str)
+    }
 
-    matches.append(last)
-    return matches
+def format_team(team, number: int):
+    """팀 하나를 코드박스로 적는다.
 
-def build_team_index(matches):
-    """{user_id: (팀 번호, 그 팀 전원)} — '내 팀 확인' 버튼이 쓴다."""
-    index = {}
-    for i, (team1, team2) in enumerate(matches):
-        for number, team in ((i * 2 + 1, team1), (i * 2 + 2, team2)):
-            for entry in team:
-                if not isinstance(entry, str):
-                    index[entry.id] = (number, team)
-    return index
-
-def format_match(team1, team2, first_team: int):
-    """경기 하나를 코드박스로 적는다. 팀 번호는 경기를 넘어 이어진다 (1·2 / 3·4 / 5·6).
-
+    열 명을 ` · ` 로 한 줄에 이으면 150자가 넘어 모바일 코드박스에서 가로로 쓸어야
+    뒷사람이 보인다. 그래서 이름을 한 줄에 하나씩 세로로 쌓는다.
     코드박스 안에서는 마크다운이 적용되지 않아 글자를 키울 수 없다.
-    이름에 공백이 들어갈 수 있어(`00 도굴꾼 임누리`) 구분자는 공백이 아닌 ` · ` 를 쓴다.
     """
-    return (
-        "```\n"
-        f"{first_team}팀 : {' · '.join(entry_name(e) for e in team1)}\n"
-        f"{first_team + 1}팀 : {' · '.join(entry_name(e) for e in team2)}\n"
-        "```"
-    )
+    lines = [f"{number}팀"] + [entry_name(e) for e in team]
+    return "```\n" + "\n".join(lines) + "\n```"
 
-def build_teams_embed(participants, matches):
+def build_teams_embed(participants, teams):
     """추첨 결과 Embed."""
-    blocks = [f"### {len(participants)}명 · {len(matches)}경기"]
-
-    for i, (team1, team2) in enumerate(matches):
-        blocks.append(format_match(team1, team2, i * 2 + 1))
-
-    # 빈자리는 마지막 경기에만 생긴다.
-    # 작은 글씨(-#)로 두면 정작 봐야 할 경고가 가장 안 보인다.
-    remainder = len(participants) - (len(matches) - 1) * MATCH_SIZE
-    if remainder < MATCH_SIZE:
-        last = len(matches) * 2
-        blocks.append(
-            f"**⚠️ {last - 1}팀·{last}팀은 실인원 {remainder}명입니다"
-            f" (빈자리 {MATCH_SIZE - remainder})**"
-        )
+    blocks = [f"### {len(participants)}명 · {len(teams)}팀"]
+    blocks += [format_team(team, number) for number, team in enumerate(teams, start=1)]
 
     embed = discord.Embed(
         title="🎲 내전 팀 추첨",
         description="\n".join(blocks),
         color=DRAW_COLOR,
     )
-    embed.set_footer(text="아래 버튼을 누르면 본인 팀만 따로 보여줍니다")
+    embed.set_footer(text="아래 버튼을 누르면 본인 팀 번호를 따로 보여줍니다")
     return embed
 
 def prepare_draw(guild):
@@ -162,7 +129,7 @@ def prepare_draw(guild):
             "`관전_`·`대기_` 가 아닌 참가자가 있어야 합니다."
         )
 
-    return participants, draw_matches(participants), None
+    return participants, split_teams(participants), None
 
 class MyTeamView(discord.ui.View):
     """결과 메시지에 붙는 '내 팀 확인' 버튼.
@@ -193,22 +160,18 @@ class MyTeamView(discord.ui.View):
 
     @discord.ui.button(label="내 팀 확인", style=discord.ButtonStyle.primary)
     async def my_team(self, interaction: discord.Interaction, button: discord.ui.Button):
-        found = self.team_index.get(interaction.user.id)
-        if found is None:
+        number = self.team_index.get(interaction.user.id)
+        if number is None:
             await interaction.response.send_message(
                 "이번 추첨에 포함되지 않았습니다.", ephemeral=True
             )
             schedule_dismiss(interaction, DISMISS_SECONDS)
             return
 
-        number, team = found
-        mates = [e for e in team if getattr(e, "id", None) != interaction.user.id]
-
         await interaction.response.send_message(
-            f"{interaction.user.mention} 님은 **{number}팀** 입니다\n"
-            f"같은 팀: {' · '.join(entry_mention(e) for e in mates)}",
+            f"{interaction.user.mention} 님은 **{number}팀** 입니다",
             ephemeral=True,
-            # ephemeral 은 본인만 보지만, 같은 팀 멘션으로 남에게 알림이 가지 않도록 못 박는다
+            # 본인 멘션뿐이지만 멘션으로 알림이 가는 일이 없도록 못 박는다
             allowed_mentions=discord.AllowedMentions.none(),
         )
         schedule_dismiss(interaction, DISMISS_SECONDS)
@@ -232,7 +195,8 @@ def parse_map_args(raw: str):
     if not maps:
         return 0, [], (
             "⚠️ 맵을 입력해주세요.\n"
-            "사용법: `!내전맵뽑 2 코로드 브리즈 어센트 선셋`"
+            "사용법: `!내전맵뽑 2 코로드 브리즈 어센트 선셋`\n"
+            "맵은 공백·쉼표 어느 쪽으로 구분해도 됩니다: `!내전맵뽑 2 코로드,브리즈,어센트,선셋`"
         )
     if count < 1:
         return 0, [], "⚠️ 뽑을 개수는 1 이상이어야 합니다."
@@ -276,7 +240,7 @@ def setup_draw_commands(bot: commands.Bot):
     async def draw_teams(ctx):
         await delete_command_message(ctx)
 
-        participants, matches, error = prepare_draw(ctx.guild)
+        participants, teams, error = prepare_draw(ctx.guild)
         if error is not None:
             await ctx.send(error, delete_after=20)
             return
@@ -286,9 +250,9 @@ def setup_draw_commands(bot: commands.Bot):
         async with ctx.channel.typing():
             await asyncio.sleep(TYPING_DELAY)
 
-        view = MyTeamView(build_team_index(matches))
+        view = MyTeamView(build_team_index(teams))
         view.result_message = await ctx.send(
-            embed=build_teams_embed(participants, matches), view=view
+            embed=build_teams_embed(participants, teams), view=view
         )
 
     @draw_teams.error
@@ -324,6 +288,7 @@ def setup_draw_commands(bot: commands.Bot):
             ctx, error, "!내전맵뽑",
             usage=(
                 "⚠️ 맵을 입력해주세요.\n"
-                "사용법: `!내전맵뽑 2 코로드 브리즈 어센트 선셋`"
+                "사용법: `!내전맵뽑 2 코로드 브리즈 어센트 선셋`\n"
+                "맵은 공백·쉼표 어느 쪽으로 구분해도 됩니다: `!내전맵뽑 2 코로드,브리즈,어센트,선셋`"
             ),
         )
