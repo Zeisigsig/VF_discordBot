@@ -94,18 +94,26 @@ def build_team_index(teams):
     }
 
 def format_team(team, number: int):
-    """팀 하나를 코드박스로 적는다.
+    """팀 하나. 이름은 한 줄에 하나씩 세로로 쌓는다.
 
-    열 명을 ` · ` 로 한 줄에 이으면 150자가 넘어 모바일 코드박스에서 가로로 쓸어야
-    뒷사람이 보인다. 그래서 이름을 한 줄에 하나씩 세로로 쌓는다.
-    코드박스 안에서는 마크다운이 적용되지 않아 글자를 키울 수 없다.
+    **코드박스를 쓰지 않는다** — 코드블록 안은 마크다운이 적용되지 않아 글자를 키울 수 없고,
+    기본 본문보다 작게 렌더링된다. 디스코드에서 본문을 키우는 수단은 `#`·`##`·`###` 헤딩뿐이다.
+    그래서 팀 번호를 `##` 로 키우고 이름은 본문 크기로 둔다.
+
+    이름을 인용줄(`> `)로 묶는 이유는 왼쪽에 세로선이 생겨 팀이 한 블록으로 떨어져 보이기
+    때문이다. 글머리표(`- `)는 빈자리 라벨(`대기 - 1`)과 하이픈이 겹쳐 지저분해진다.
+
+    코드박스가 막아주던 마크다운을 직접 막아야 한다 — `_`·`*`·`~` 가 들어간 닉네임이
+    기울임·취소선으로 깨지지 않게 escape 한다.
     """
-    lines = [f"{number}팀"] + [entry_name(e) for e in team]
-    return "```\n" + "\n".join(lines) + "\n```"
+    lines = [f"## {number}팀"]
+    lines += [f"> {discord.utils.escape_markdown(entry_name(e))}" for e in team]
+    return "\n".join(lines)
 
 def build_teams_embed(participants, teams):
     """추첨 결과 Embed."""
-    blocks = [f"### {len(participants)}명 · {len(teams)}팀"]
+    # 팀 번호가 ## 이므로 요약을 ### 로 두면 위계가 거꾸로 선다. 부가 정보라 작은 글씨로.
+    blocks = [f"-# 총 {len(participants)}명 · {len(teams)}팀"]
     blocks += [format_team(team, number) for number, team in enumerate(teams, start=1)]
 
     embed = discord.Embed(
